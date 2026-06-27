@@ -1,6 +1,6 @@
 --[[
-    AutoFarm - Storage Hunters
-    Script otimizado para o jogo Storage Hunters
+    Storage Hunters AutoFarm - Versão Específica
+    Baseado na UI real do jogo
 ]]
 
 -- Serviços
@@ -23,9 +23,10 @@ local Config = {
     }
 }
 
--- ====== VARIÁVEIS GLOBAIS ======
-local LastBid = 0
-local IsBidding = false
+-- ====== VARIÁVEIS ======
+local CurrentBid = 0
+local LastBidder = ""
+local InAuction = false
 local CollectedItems = {}
 
 -- ====== UTILITÁRIOS ======
@@ -34,14 +35,6 @@ local function GetRoot()
     local char = LocalPlayer.Character
     if char then
         return char:FindFirstChild("HumanoidRootPart")
-    end
-    return nil
-end
-
-local function GetHumanoid()
-    local char = LocalPlayer.Character
-    if char then
-        return char:FindFirstChild("Humanoid")
     end
     return nil
 end
@@ -58,16 +51,8 @@ local function Teleport(pos)
     return false
 end
 
-local function WalkTo(pos)
-    local humanoid = GetHumanoid()
-    if humanoid and pos then
-        humanoid:MoveTo(pos)
-        return true
-    end
-    return false
-end
-
 local function FindUI(namePattern)
+    -- Procurar em CoreGui
     for _, gui in pairs(game.CoreGui:GetChildren()) do
         if gui:IsA("ScreenGui") and gui.Enabled then
             if string.lower(gui.Name):find(string.lower(namePattern)) then
@@ -75,7 +60,7 @@ local function FindUI(namePattern)
             end
         end
     end
-    -- Procurar em PlayerGui também
+    -- Procurar em PlayerGui
     local playerGui = LocalPlayer:FindFirstChild("PlayerGui")
     if playerGui then
         for _, gui in pairs(playerGui:GetChildren()) do
@@ -119,17 +104,6 @@ local function FindButton(ui, textPattern)
     return nil
 end
 
-local function FindAllButtons(ui)
-    local buttons = {}
-    if not ui then return buttons end
-    for _, child in pairs(ui:GetDescendants()) do
-        if (child:IsA("TextButton") or child:IsA("ImageButton")) and child.Visible then
-            table.insert(buttons, child)
-        end
-    end
-    return buttons
-end
-
 local function FindText(ui, textPattern)
     if not ui then return nil end
     for _, child in pairs(ui:GetDescendants()) do
@@ -140,6 +114,19 @@ local function FindText(ui, textPattern)
         end
     end
     return nil
+end
+
+local function FindAllTexts(ui)
+    local texts = {}
+    if not ui then return texts end
+    for _, child in pairs(ui:GetDescendants()) do
+        if (child:IsA("TextLabel") or child:IsA("TextButton")) and child.Visible then
+            if child.Text and child.Text ~= "" then
+                table.insert(texts, child)
+            end
+        end
+    end
+    return texts
 end
 
 local function Click(btn)
@@ -154,30 +141,14 @@ local function Click(btn)
     return true
 end
 
-local function ClickAtPosition(pos)
-    if pos then
-        VirtualInputManager:SendMouseButtonEvent(pos.X, pos.Y, 0, true, game, 0)
-        task.wait(0.05)
-        VirtualInputManager:SendMouseButtonEvent(pos.X, pos.Y, 0, false, game, 0)
-        return true
-    end
-    return false
-end
-
-local function PressKey(key)
-    VirtualInputManager:SendKeyEvent(true, key, false, game)
-    task.wait(0.05)
-    VirtualInputManager:SendKeyEvent(false, key, false, game)
-end
-
 local function Notify(msg, color)
     local gui = Instance.new("ScreenGui")
     gui.Name = "Notify"
     gui.Parent = game.CoreGui
     
     local frame = Instance.new("Frame")
-    frame.Size = UDim2.new(0, 320, 0, 35)
-    frame.Position = UDim2.new(0.5, -160, 0.85, 0)
+    frame.Size = UDim2.new(0, 350, 0, 35)
+    frame.Position = UDim2.new(0.5, -175, 0.85, 0)
     frame.BackgroundColor3 = Color3.fromRGB(15, 15, 35)
     frame.BackgroundTransparency = 0.1
     frame.Parent = gui
@@ -202,127 +173,160 @@ local function Notify(msg, color)
     gui:Destroy()
 end
 
--- ====== SISTEMA DE BID ESPECÍFICO ======
+-- ====== DETECTOR DE LEILÃO ======
 
--- Função para detectar o minigame de bid
-local function DetectBidUI()
-    -- Procurar por UIs relacionadas a leilão
-    local uiNames = {"bid", "auction", "leilão", "storage", "container", "warehouse", "garage"}
-    for _, name in pairs(uiNames) do
-        local ui = FindUI(name)
-        if ui then
-            return ui
-        end
-    end
-    
-    -- Procurar por botões comuns em leilões
+local function DetectAuctionUI()
+    -- Procurar pela UI de leilão baseado na imagem
     local uis = FindAllUIs()
+    
     for _, ui in pairs(uis) do
-        local buttons = FindAllButtons(ui)
-        for _, btn in pairs(buttons) do
-            local text = string.lower(btn.Text or "")
-            if string.find(text, "bid") or string.find(text, "$") or 
-               string.find(text, "apostar") or string.find(text, "leilão") then
-                return ui
-            end
-        end
-    end
-    return nil
-end
-
--- Função para fazer o bid automaticamente
-local function DoAutoBid()
-    local ui = DetectBidUI()
-    if not ui then return false end
-    
-    Notify("🎯 Leilão detectado!", Color3.fromRGB(255, 200, 0))
-    
-    -- Procurar botões de bid (geralmente são numerados ou com valores)
-    local buttons = FindAllButtons(ui)
-    local bidButtons = {}
-    
-    for _, btn in pairs(buttons) do
-        local text = btn.Text or ""
-        -- Verificar se é um botão de bid (contém $ ou número)
-        if string.find(text, "$") or string.find(text, "%d+") then
-            table.insert(bidButtons, btn)
-        end
-    end
-    
-    -- Ordenar por valor (maior primeiro)
-    table.sort(bidButtons, function(a, b)
-        local valA = tonumber(string.match(a.Text or "", "%d+")) or 0
-        local valB = tonumber(string.match(b.Text or "", "%d+")) or 0
-        return valA > valB
-    end)
-    
-    -- Clicar no maior bid disponível
-    if #bidButtons > 0 then
-        local bestBid = bidButtons[1]
-        local value = tonumber(string.match(bestBid.Text or "", "%d+")) or 0
+        -- Verificar se tem "LICITACÃO" ou "CURRENT" ou "NEXT"
+        local hasAuctionText = false
+        local texts = FindAllTexts(ui)
         
-        if value > LastBid then
-            Click(bestBid)
-            LastBid = value
-            Notify("💰 Bid de $" .. value, Color3.fromRGB(0, 255, 100))
-            return true
-        end
-    end
-    
-    -- Fallback: procurar botão "Bid" genérico
-    local bidBtn = FindButton(ui, "bid") or FindButton(ui, "apostar")
-    if bidBtn then
-        Click(bidBtn)
-        Notify("💰 Bid realizado!", Color3.fromRGB(0, 255, 100))
-        return true
-    end
-    
-    return false
-end
-
--- ====== AUTO BID ======
-local function AutoBid()
-    Notify("🚗 Auto Bid iniciado", Color3.fromRGB(100, 200, 255))
-    
-    while Config.Toggles.AutoBid do
-        task.wait(0.3)
-        
-        -- Verificar se está em um leilão
-        local inAuction = false
-        local uis = FindAllUIs()
-        for _, ui in pairs(uis) do
-            local text = FindText(ui, "leilão") or FindText(ui, "auction") or FindText(ui, "bid")
-            if text then
-                inAuction = true
+        for _, txt in pairs(texts) do
+            local text = string.lower(txt.Text or "")
+            if string.find(text, "licitação") or string.find(text, "leilão") or
+               string.find(text, "current") or string.find(text, "next") or
+               string.find(text, "maior lance") or string.find(text, "oferta") then
+                hasAuctionText = true
                 break
             end
         end
         
-        if inAuction then
-            DoAutoBid()
-        else
-            -- Se não estiver em leilão, procurar por containers para abrir
-            local storageUI = FindUI("storage")
-            if storageUI then
-                local openBtn = FindButton(storageUI, "abrir") or FindButton(storageUI, "open")
-                if openBtn then
-                    Click(openBtn)
-                    Notify("📦 Abrindo container...", Color3.fromRGB(255, 200, 0))
-                    task.wait(1)
+        if hasAuctionText then
+            return ui
+        end
+    end
+    
+    -- Procurar por UI com botões de bid
+    for _, ui in pairs(uis) do
+        local buttons = ui:GetDescendants()
+        local hasBidButton = false
+        local hasPriceText = false
+        
+        for _, child in pairs(buttons) do
+            if (child:IsA("TextButton") or child:IsA("ImageButton")) and child.Visible then
+                local text = string.lower(child.Text or "")
+                if string.find(text, "bid") or string.find(text, "$") then
+                    hasBidButton = true
                 end
+            end
+            if child:IsA("TextLabel") and child.Visible then
+                local text = string.lower(child.Text or "")
+                if string.find(text, "$") or string.find(text, "%d+") then
+                    hasPriceText = true
+                end
+            end
+        end
+        
+        if hasBidButton and hasPriceText then
+            return ui
+        end
+    end
+    
+    return nil
+end
+
+-- ====== AUTO BID ======
+
+local function AutoBid()
+    Notify("💰 Auto Bid iniciado", Color3.fromRGB(100, 200, 255))
+    
+    while Config.Toggles.AutoBid do
+        task.wait(0.3)
+        
+        -- Detectar UI de leilão
+        local ui = DetectAuctionUI()
+        
+        if ui then
+            if not InAuction then
+                InAuction = true
+                Notify("🎯 Leilão detectado!", Color3.fromRGB(255, 200, 0))
+            end
+            
+            -- Procurar o valor atual do bid
+            local currentBidText = FindText(ui, "current") or FindText(ui, "atual")
+            if currentBidText then
+                local bidValue = tonumber(string.match(currentBidText.Text, "(%d+)"))
+                if bidValue and bidValue > CurrentBid then
+                    CurrentBid = bidValue
+                    Notify("💰 Lance atual: $" .. bidValue, Color3.fromRGB(255, 200, 0))
+                end
+            end
+            
+            -- Procurar botão de bid (geralmente é um botão com "$" ou "Bid")
+            local bidBtn = nil
+            
+            -- Procurar por botões com números (valores de bid)
+            local allButtons = ui:GetDescendants()
+            local bidButtons = {}
+            
+            for _, child in pairs(allButtons) do
+                if (child:IsA("TextButton") or child:IsA("ImageButton")) and child.Visible then
+                    local text = child.Text or ""
+                    -- Verificar se é um botão de bid (tem $ ou número)
+                    if string.find(text, "$") or (string.match(text, "^%d+$") and tonumber(text) > 0) then
+                        table.insert(bidButtons, child)
+                    end
+                end
+            end
+            
+            -- Ordenar botões por valor (maior primeiro)
+            table.sort(bidButtons, function(a, b)
+                local valA = tonumber(string.match(a.Text or "", "%d+")) or 0
+                local valB = tonumber(string.match(b.Text or "", "%d+")) or 0
+                return valA > valB
+            end)
+            
+            -- Clicar no maior bid disponível
+            if #bidButtons > 0 then
+                local bestBid = bidButtons[1]
+                local value = tonumber(string.match(bestBid.Text or "", "%d+")) or 0
+                
+                if value > CurrentBid then
+                    Click(bestBid)
+                    CurrentBid = value
+                    Notify("💎 Bid de $" .. value .. " colocado!", Color3.fromRGB(0, 255, 100))
+                end
+            end
+            
+            -- Fallback: procurar botão "Bid" genérico
+            if #bidButtons == 0 then
+                bidBtn = FindButton(ui, "bid") or FindButton(ui, "apostar") or FindButton(ui, "oferta")
+                if bidBtn then
+                    Click(bidBtn)
+                    Notify("💎 Bid colocado!", Color3.fromRGB(0, 255, 100))
+                end
+            end
+            
+            -- Verificar se o leilão acabou (procurar botão "Abrir" ou "Open")
+            local openBtn = FindButton(ui, "abrir") or FindButton(ui, "open") or FindButton(ui, "reivindicar")
+            if openBtn then
+                Click(openBtn)
+                Notify("📦 Container aberto!", Color3.fromRGB(0, 255, 100))
+                InAuction = false
+                task.wait(1)
+            end
+            
+        else
+            if InAuction then
+                InAuction = false
+                Notify("⏰ Leilão finalizado", Color3.fromRGB(255, 200, 0))
             end
         end
     end
 end
 
 -- ====== AUTO COLETAR ======
+
 local function AutoColetar()
     Notify("📦 Auto Coletar iniciado", Color3.fromRGB(100, 200, 255))
     
     while Config.Toggles.AutoColetar do
         task.wait(0.5)
         
-        -- Procurar itens no chão (Storage Hunters tem itens espalhados)
+        -- Procurar itens no chão
         local foundItems = {}
         
         for _, obj in pairs(workspace:GetDescendants()) do
@@ -331,11 +335,11 @@ local function AutoColetar()
                 local hasClick = obj:FindFirstChild("ClickDetector") or 
                                (obj:IsA("Model") and obj:FindFirstChild("ClickDetector"))
                 
-                -- Verificar se é um item coletável
+                -- Verificar se é um item coletável (Storage Hunters)
                 if hasClick or string.find(name, "item") or 
                    string.find(name, "loot") or string.find(name, "drop") or
-                   string.find(name, "collect") or string.find(name, "crate") or
-                   string.find(name, "caixa") or string.find(name, "container") then
+                   string.find(name, "colet") or string.find(name, "caixa") or
+                   string.find(name, "crate") or string.find(name, "container") then
                     
                     local pos
                     if obj:IsA("Model") and obj.PrimaryPart then
@@ -351,12 +355,11 @@ local function AutoColetar()
             end
         end
         
-        -- Coletar itens encontrados
+        -- Coletar itens
         for _, item in pairs(foundItems) do
             Teleport(item.pos)
             task.wait(0.3)
             
-            -- Tentar coletar via ClickDetector
             local cd = item.obj:FindFirstChild("ClickDetector")
             if cd then
                 cd:FireClick(LocalPlayer)
@@ -364,24 +367,13 @@ local function AutoColetar()
                 Notify("✅ Coletou: " .. item.obj.Name, Color3.fromRGB(0, 255, 100))
                 task.wait(0.2)
             end
-            
-            -- Se não tiver ClickDetector, tentar via UI
-            local ui = FindUI("collect") or FindUI("coletar")
-            if ui then
-                local btn = FindButton(ui, "coletar") or FindButton(ui, "collect") or FindButton(ui, "pegar")
-                if btn then
-                    Click(btn)
-                    CollectedItems[item.obj] = true
-                    Notify("✅ Coletou via UI", Color3.fromRGB(0, 255, 100))
-                    task.wait(0.2)
-                end
-            end
         end
         
-        -- Procurar UI de coleta em massa
-        local ui = FindUI("loot") or FindUI("reward")
+        -- Procurar UI de coleta/recompensa
+        local ui = FindUI("reward") or FindUI("loot") or FindUI("recompensa")
         if ui then
-            local claimBtn = FindButton(ui, "reivindicar") or FindButton(ui, "claim") or FindButton(ui, "coletar")
+            local claimBtn = FindButton(ui, "reivindicar") or FindButton(ui, "claim") or 
+                            FindButton(ui, "coletar") or FindButton(ui, "pegar")
             if claimBtn then
                 Click(claimBtn)
                 Notify("✅ Reivindicou recompensas", Color3.fromRGB(0, 255, 100))
@@ -391,19 +383,19 @@ local function AutoColetar()
 end
 
 -- ====== AUTO DRIVE ======
+
 local function AutoDrive()
-    Notify("🚀 Auto Drive iniciado", Color3.fromRGB(100, 200, 255))
+    Notify("🚚 Auto Drive iniciado", Color3.fromRGB(100, 200, 255))
     
     while Config.Toggles.AutoDrive do
         task.wait(2)
         
-        -- Procurar veículos (Storage Hunters tem caminhões/empilhadeiras)
+        -- Procurar veículos (Storage Hunters tem caminhões)
         local vehicle = nil
         for _, obj in pairs(workspace:GetChildren()) do
             if obj:IsA("Model") then
                 local name = string.lower(obj.Name)
                 if string.find(name, "truck") or string.find(name, "caminhão") or 
-                   string.find(name, "forklift") or string.find(name, "empilhadeira") or
                    string.find(name, "vehicle") or string.find(name, "carro") or
                    string.find(name, "van") or string.find(name, "carrinho") then
                     vehicle = obj
@@ -415,17 +407,14 @@ local function AutoDrive()
         if vehicle then
             Notify("🚗 Veículo encontrado: " .. vehicle.Name, Color3.fromRGB(255, 200, 0))
             
-            -- Procurar assento
             local seat = vehicle:FindFirstChild("Seat") or 
                         vehicle:FindFirstChild("DriverSeat") or
-                        vehicle:FindFirstChild("VehicleSeat") or
-                        vehicle:FindFirstChild("Driver")
+                        vehicle:FindFirstChild("VehicleSeat")
             
             if seat then
                 Teleport(seat.Position)
                 task.wait(0.5)
                 
-                -- Entrar no veículo
                 if seat:IsA("Seat") or seat:IsA("VehicleSeat") then
                     local char = LocalPlayer.Character
                     if char then
@@ -441,19 +430,16 @@ local function AutoDrive()
                     if obj:IsA("BasePart") then
                         local name = string.lower(obj.Name)
                         if string.find(name, "unload") or string.find(name, "descarregar") or
-                           string.find(name, "delivery") or string.find(name, "entrega") or
-                           string.find(name, "drop") or string.find(name, "zone") then
+                           string.find(name, "delivery") or string.find(name, "drop") then
                             unloadPos = obj.Position
                             break
                         end
                     end
                 end
                 
-                if unloadPos then
-                    if vehicle.PrimaryPart then
-                        vehicle.PrimaryPart.CFrame = CFrame.new(unloadPos)
-                        Notify("✅ Veículo teleportado para descarregar", Color3.fromRGB(0, 255, 100))
-                    end
+                if unloadPos and vehicle.PrimaryPart then
+                    vehicle.PrimaryPart.CFrame = CFrame.new(unloadPos)
+                    Notify("✅ Veículo teleportado", Color3.fromRGB(0, 255, 100))
                 end
             end
         end
@@ -461,6 +447,7 @@ local function AutoDrive()
 end
 
 -- ====== AUTO DESCARREGAR ======
+
 local function AutoDescarregar()
     Notify("📥 Auto Descarregar iniciado", Color3.fromRGB(100, 200, 255))
     
@@ -473,38 +460,26 @@ local function AutoDescarregar()
         if ui then
             Notify("📋 UI de descarregamento encontrada", Color3.fromRGB(255, 200, 0))
             
-            -- Procurar botão de descarregar
             local btn = FindButton(ui, "descarregar") or 
                        FindButton(ui, "unload") or
                        FindButton(ui, "entregar") or
-                       FindButton(ui, "deliver") or
-                       FindButton(ui, "confirmar")
+                       FindButton(ui, "deliver")
             
             if btn then
                 Click(btn)
                 Notify("✅ Descarregando...", Color3.fromRGB(0, 255, 100))
                 task.wait(2)
             end
-            
-            -- Tentar botões numerados (quantidade de itens)
-            for i = 1, 10 do
-                local numBtn = FindButton(ui, tostring(i))
-                if numBtn then
-                    Click(numBtn)
-                    Notify("✅ Descarregou " .. i .. " itens", Color3.fromRGB(0, 255, 100))
-                    break
-                end
-            end
         end
         
-        -- Procurar área de descarregamento no mapa
+        -- Procurar área no mapa
         if not ui then
             for _, obj in pairs(workspace:GetDescendants()) do
                 if obj:IsA("BasePart") then
                     local name = string.lower(obj.Name)
                     if string.find(name, "unload") or string.find(name, "descarregar") then
                         Teleport(obj.Position)
-                        Notify("📍 Teleportado para área de descarregar", Color3.fromRGB(255, 200, 0))
+                        Notify("📍 Teleportado para descarregar", Color3.fromRGB(255, 200, 0))
                         task.wait(0.5)
                         break
                     end
@@ -515,6 +490,7 @@ local function AutoDescarregar()
 end
 
 -- ====== AUTO PLOT ======
+
 local function AutoPlot()
     Notify("📊 Auto Plot iniciado", Color3.fromRGB(100, 200, 255))
     
@@ -526,34 +502,36 @@ local function AutoPlot()
                    FindUI("storage") or FindUI("inventory") or FindUI("estoque")
         
         if ui then
-            Notify("🏪 UI da loja/estoque encontrada", Color3.fromRGB(255, 200, 0))
+            Notify("🏪 UI da loja encontrada", Color3.fromRGB(255, 200, 0))
             
-            -- Procurar itens para colocar
+            -- Procurar botões de itens
+            local allButtons = ui:GetDescendants()
             local itemsPlaced = 0
-            local allButtons = FindAllButtons(ui)
             
-            for _, btn in pairs(allButtons) do
-                local text = btn.Text or ""
-                -- Verificar se é um item (não é botão de ação)
-                if not string.find(string.lower(text), "voltar") and
-                   not string.find(string.lower(text), "close") and
-                   not string.find(string.lower(text), "fechar") and
-                   not string.find(string.lower(text), "sair") then
-                    
-                    if string.len(text) > 1 then
-                        Click(btn)
-                        itemsPlaced = itemsPlaced + 1
-                        task.wait(0.15)
+            for _, child in pairs(allButtons) do
+                if (child:IsA("TextButton") or child:IsA("ImageButton")) and child.Visible then
+                    local text = child.Text or ""
+                    -- Verificar se é um item (não é botão de navegação)
+                    if not string.find(string.lower(text), "voltar") and
+                       not string.find(string.lower(text), "close") and
+                       not string.find(string.lower(text), "fechar") and
+                       not string.find(string.lower(text), "sair") and
+                       not string.find(string.lower(text), "menu") then
+                        
+                        if string.len(text) > 1 then
+                            Click(child)
+                            itemsPlaced = itemsPlaced + 1
+                            task.wait(0.15)
+                        end
                     end
                 end
             end
             
-            -- Botão para confirmar colocação
+            -- Botão para confirmar
             local confirmBtn = FindButton(ui, "colocar") or 
                               FindButton(ui, "place") or
                               FindButton(ui, "plot") or
                               FindButton(ui, "adicionar") or
-                              FindButton(ui, "add") or
                               FindButton(ui, "confirmar")
             
             if confirmBtn then
@@ -565,13 +543,14 @@ local function AutoPlot()
 end
 
 -- ====== AUTO LIMPEZA ======
+
 local function AutoLimpeza()
     Notify("🧹 Auto Limpeza iniciado", Color3.fromRGB(100, 200, 255))
     
     while Config.Toggles.AutoLimpeza do
         task.wait(2)
         
-        -- Verificar se há itens sujos
+        -- Verificar itens sujos
         local hasDirty = false
         local playerGui = LocalPlayer:FindFirstChild("PlayerGui")
         
@@ -581,8 +560,7 @@ local function AutoLimpeza()
                     for _, child in pairs(gui:GetDescendants()) do
                         if child:IsA("TextLabel") or child:IsA("TextButton") then
                             local text = string.lower(child.Text or "")
-                            if string.find(text, "dirty") or string.find(text, "sujo") or
-                               string.find(text, "sujeira") or string.find(text, "sujar") then
+                            if string.find(text, "dirty") or string.find(text, "sujo") then
                                 hasDirty = true
                                 Notify("🧹 Item sujo encontrado", Color3.fromRGB(255, 200, 0))
                                 break
@@ -618,13 +596,9 @@ local function AutoLimpeza()
             local ui = FindUI("clean") or FindUI("limpeza") or FindUI("lavar")
             
             if ui then
-                Notify("🧹 UI de limpeza encontrada", Color3.fromRGB(255, 200, 0))
-                
-                -- Clicar em limpar item
                 local cleanBtn = FindButton(ui, "limpar") or 
                                 FindButton(ui, "clean") or
-                                FindButton(ui, "lavar") or
-                                FindButton(ui, "wash")
+                                FindButton(ui, "lavar")
                 
                 if cleanBtn then
                     Click(cleanBtn)
@@ -640,7 +614,7 @@ end
 
 local function CreateUI()
     local screenGui = Instance.new("ScreenGui")
-    screenGui.Name = "AutoFarmSH"
+    screenGui.Name = "StorageAuto"
     screenGui.Parent = game.CoreGui
     screenGui.ResetOnSpawn = false
     
@@ -671,7 +645,7 @@ local function CreateUI()
     titleText.Size = UDim2.new(1, -40, 1, 0)
     titleText.Position = UDim2.new(0, 15, 0, 0)
     titleText.BackgroundTransparency = 1
-    titleText.Text = "📦 Storage AutoFarm"
+    titleText.Text = "📦 Storage Auto"
     titleText.TextColor3 = Color3.fromRGB(120, 80, 255)
     titleText.TextSize = 16
     titleText.TextXAlignment = Enum.TextXAlignment.Left
@@ -679,7 +653,7 @@ local function CreateUI()
     titleText.Font = Enum.Font.GothamBold
     titleText.Parent = title
     
-    -- Botão fechar
+    -- Fechar
     local close = Instance.new("TextButton")
     close.Size = UDim2.new(0, 26, 0, 26)
     close.Position = UDim2.new(1, -33, 0, 6)
@@ -716,7 +690,7 @@ local function CreateUI()
     list.SortOrder = Enum.SortOrder.LayoutOrder
     list.Parent = scroll
     
-    -- Toggles específicos do Storage Hunters
+    -- Toggles
     local toggleData = {
         {"AutoBid", "💰 Auto Bid"},
         {"AutoColetar", "📦 Auto Coletar"},
@@ -820,22 +794,22 @@ local function CreateUI()
         frame.LayoutOrder = #toggleData
     end
     
+    -- Status
+    local status = Instance.new("TextLabel")
+    status.Size = UDim2.new(1, -20, 0, 20)
+    status.Position = UDim2.new(0, 10, 1, -25)
+    status.BackgroundTransparency = 1
+    status.Text = "🔄 Storage Hunters | INSERT"
+    status.TextColor3 = Color3.fromRGB(150, 150, 200)
+    status.TextSize = 10
+    status.Font = Enum.Font.Gotham
+    status.TextXAlignment = Enum.TextXAlignment.Center
+    status.Parent = main
+    
     -- Atualizar canvas
     list:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
-        scroll.CanvasSize = UDim2.new(0, 0, 0, list.AbsoluteContentSize.Y + 10)
+        scroll.CanvasSize = UDim2.new(0, 0, 0, list.AbsoluteContentSize.Y + 30)
     end)
-    
-    -- Info extra
-    local info = Instance.new("TextLabel")
-    info.Size = UDim2.new(1, -20, 0, 20)
-    info.Position = UDim2.new(0, 10, 1, -25)
-    info.BackgroundTransparency = 1
-    info.Text = "🔄 Storage Hunters | INSERT"
-    info.TextColor3 = Color3.fromRGB(150, 150, 200)
-    info.TextSize = 10
-    info.Font = Enum.Font.Gotham
-    info.TextXAlignment = Enum.TextXAlignment.Center
-    info.Parent = main
     
     -- Tecla Insert
     UserInputService.InputBegan:Connect(function(input)
@@ -843,12 +817,12 @@ local function CreateUI()
             isOpen = not isOpen
             main.Visible = isOpen
             if isOpen then
-                Notify("📱 Storage AutoFarm Carregado!", Color3.fromRGB(100, 200, 255))
+                Notify("📱 Storage Auto Carregado!", Color3.fromRGB(100, 200, 255))
             end
         end
     end)
     
-    Notify("🚀 Storage AutoFarm Carregado! Pressione INSERT", Color3.fromRGB(0, 255, 100))
+    Notify("🚀 Storage Auto Carregado! Pressione INSERT", Color3.fromRGB(0, 255, 100))
     return screenGui
 end
 
