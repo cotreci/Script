@@ -1,25 +1,18 @@
 --[[
-    AutoFarm Pro - Versão Melhorada com Debug
-    Adicione este script em um LocalScript dentro de StarterPlayerScripts
+    AutoFarm - Storage Hunters
+    Script otimizado para o jogo Storage Hunters
 ]]
 
--- ===================
--- SERVIÇOS
--- ===================
+-- Serviços
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
-local TweenService = game:GetService("TweenService")
 local UserInputService = game:GetService("UserInputService")
 local VirtualInputManager = game:GetService("VirtualInputManager")
+local TweenService = game:GetService("TweenService")
 local LocalPlayer = Players.LocalPlayer
-local Mouse = LocalPlayer:GetMouse()
-local TeleportService = game:GetService("TeleportService")
 
--- ===================
--- CONFIGURAÇÕES
--- ===================
+-- ====== CONFIG ======
 local Config = {
-    Debug = true, -- Ativar logs de debug
     Toggles = {
         AutoBid = false,
         AutoColetar = false,
@@ -27,859 +20,837 @@ local Config = {
         AutoDescarregar = false,
         AutoPlot = false,
         AutoLimpeza = false
-    },
-    Positions = {
-        Store = Vector3.new(0, 5, 0), -- Ajuste para posição da loja
-        Laundry = Vector3.new(0, 5, 0), -- Ajuste para posição da lavanderia
-        Garage = Vector3.new(0, 5, 0), -- Ajuste para posição da garagem
-        UnloadArea = Vector3.new(0, 5, 0), -- Ajuste para área de descarregamento
-        PlotArea = Vector3.new(0, 5, 0) -- Ajuste para área das prateleiras
     }
 }
 
--- ===================
--- SISTEMA DE DEBUG
--- ===================
-local function DebugLog(message, type)
-    if not Config.Debug then return end
-    type = type or "INFO"
-    local colors = {
-        INFO = "\27[36m", -- Ciano
-        SUCCESS = "\27[32m", -- Verde
-        WARNING = "\27[33m", -- Amarelo
-        ERROR = "\27[31m", -- Vermelho
-        DEBUG = "\27[35m" -- Roxo
-    }
-    print(colors[type] or "\27[37m", string.format("[%s] %s", type, message), "\27[0m")
-end
+-- ====== VARIÁVEIS GLOBAIS ======
+local LastBid = 0
+local IsBidding = false
+local CollectedItems = {}
 
--- ===================
--- UTILITÁRIOS MELHORADOS
--- ===================
-local Utils = {}
+-- ====== UTILITÁRIOS ======
 
-function Utils:GetCharacter()
+local function GetRoot()
     local char = LocalPlayer.Character
-    if not char or not char.Parent then
-        DebugLog("Personagem não encontrado!", "ERROR")
-        return nil
+    if char then
+        return char:FindFirstChild("HumanoidRootPart")
     end
-    return char
+    return nil
 end
 
-function Utils:GetHumanoid()
-    local char = self:GetCharacter()
-    if not char then return nil end
-    return char:FindFirstChild("Humanoid")
+local function GetHumanoid()
+    local char = LocalPlayer.Character
+    if char then
+        return char:FindFirstChild("Humanoid")
+    end
+    return nil
 end
 
-function Utils:GetRootPart()
-    local char = self:GetCharacter()
-    if not char then return nil end
-    return char:FindFirstChild("HumanoidRootPart")
+local function Teleport(pos)
+    local root = GetRoot()
+    if root and pos then
+        pcall(function()
+            root.CFrame = CFrame.new(pos + Vector3.new(0, 3, 0))
+            root.Velocity = Vector3.new(0, 0, 0)
+        end)
+        return true
+    end
+    return false
 end
 
-function Utils:TeleportTo(position, offset)
-    local root = self:GetRootPart()
-    if not root then 
-        DebugLog("RootPart não encontrado!", "ERROR")
-        return false 
+local function WalkTo(pos)
+    local humanoid = GetHumanoid()
+    if humanoid and pos then
+        humanoid:MoveTo(pos)
+        return true
     end
-    
-    if not position then
-        DebugLog("Posição inválida!", "ERROR")
-        return false
-    end
-    
-    offset = offset or Vector3.new(0, 3, 0)
-    local targetPos = position + offset
-    
-    DebugLog(string.format("Teleportando para: %.2f, %.2f, %.2f", targetPos.X, targetPos.Y, targetPos.Z), "DEBUG")
-    
-    local success, err = pcall(function()
-        root.CFrame = CFrame.new(targetPos)
-        root.Velocity = Vector3.new(0, 0, 0)
-    end)
-    
-    if not success then
-        DebugLog("Falha ao teleportar: " .. tostring(err), "ERROR")
-        return false
-    end
-    
-    return true
+    return false
 end
 
-function Utils:FindAllUI()
+local function FindUI(namePattern)
+    for _, gui in pairs(game.CoreGui:GetChildren()) do
+        if gui:IsA("ScreenGui") and gui.Enabled then
+            if string.lower(gui.Name):find(string.lower(namePattern)) then
+                return gui
+            end
+        end
+    end
+    -- Procurar em PlayerGui também
+    local playerGui = LocalPlayer:FindFirstChild("PlayerGui")
+    if playerGui then
+        for _, gui in pairs(playerGui:GetChildren()) do
+            if gui:IsA("ScreenGui") and gui.Enabled then
+                if string.lower(gui.Name):find(string.lower(namePattern)) then
+                    return gui
+                end
+            end
+        end
+    end
+    return nil
+end
+
+local function FindAllUIs()
     local uis = {}
     for _, gui in pairs(game.CoreGui:GetChildren()) do
         if gui:IsA("ScreenGui") and gui.Enabled then
             table.insert(uis, gui)
         end
     end
+    local playerGui = LocalPlayer:FindFirstChild("PlayerGui")
+    if playerGui then
+        for _, gui in pairs(playerGui:GetChildren()) do
+            if gui:IsA("ScreenGui") and gui.Enabled then
+                table.insert(uis, gui)
+            end
+        end
+    end
     return uis
 end
 
-function Utils:FindUIByName(namePattern)
-    DebugLog("Procurando UI com padrão: " .. namePattern, "DEBUG")
-    for _, gui in pairs(game.CoreGui:GetChildren()) do
-        if gui:IsA("ScreenGui") and gui.Name:lower():find(namePattern:lower()) then
-            DebugLog("UI encontrada: " .. gui.Name, "SUCCESS")
-            return gui
+local function FindButton(ui, textPattern)
+    if not ui then return nil end
+    for _, child in pairs(ui:GetDescendants()) do
+        if (child:IsA("TextButton") or child:IsA("ImageButton")) and child.Visible then
+            if child.Text and string.lower(child.Text):find(string.lower(textPattern)) then
+                return child
+            end
         end
     end
-    DebugLog("UI não encontrada: " .. namePattern, "WARNING")
     return nil
 end
 
-function Utils:FindButtonByText(ui, textPattern)
-    if not ui then return nil end
-    
-    DebugLog("Procurando botão com texto: " .. textPattern, "DEBUG")
-    
-    local function search(parent)
-        for _, child in pairs(parent:GetChildren()) do
-            if child:IsA("TextButton") or child:IsA("ImageButton") then
-                if child.Text and child.Text:lower():find(textPattern:lower()) then
-                    DebugLog("Botão encontrado: " .. child.Text, "SUCCESS")
-                    return child
-                end
-            end
-            local found = search(child)
-            if found then return found end
+local function FindAllButtons(ui)
+    local buttons = {}
+    if not ui then return buttons end
+    for _, child in pairs(ui:GetDescendants()) do
+        if (child:IsA("TextButton") or child:IsA("ImageButton")) and child.Visible then
+            table.insert(buttons, child)
         end
-        return nil
     end
-    
-    return search(ui)
+    return buttons
 end
 
-function Utils:FindItemByText(ui, textPattern)
+local function FindText(ui, textPattern)
     if not ui then return nil end
-    
-    local function search(parent)
-        for _, child in pairs(parent:GetChildren()) do
-            if child:IsA("TextLabel") or child:IsA("TextButton") then
-                if child.Text and child.Text:lower():find(textPattern:lower()) then
-                    return child
-                end
+    for _, child in pairs(ui:GetDescendants()) do
+        if (child:IsA("TextLabel") or child:IsA("TextButton")) and child.Visible then
+            if child.Text and string.lower(child.Text):find(string.lower(textPattern)) then
+                return child
             end
-            local found = search(child)
-            if found then return found end
         end
-        return nil
     end
-    
-    return search(ui)
+    return nil
 end
 
-function Utils:ClickButton(button)
-    if not button then 
-        DebugLog("Botão é nil!", "ERROR")
-        return false 
-    end
-    
-    DebugLog("Clicando no botão: " .. (button.Text or "Sem texto"), "DEBUG")
-    
-    local success, err = pcall(function()
-        -- Tentativa 1: Método padrão
-        if button:IsA("TextButton") or button:IsA("ImageButton") then
-            button:Click()
-            button:Activate()
-        end
-        
-        -- Tentativa 2: MouseButton1Click
-        if button.MouseButton1Click then
-            button.MouseButton1Click:Fire()
-        end
-        
-        -- Tentativa 3: VirtualInputManager (simula clique físico)
-        if button.AbsolutePosition then
-            local pos = button.AbsolutePosition
-            local size = button.AbsoluteSize
-            local center = pos + size / 2
-            
-            VirtualInputManager:SendMouseButtonEvent(center.X, center.Y, 0, true, game, 0)
-            task.wait(0.05)
-            VirtualInputManager:SendMouseButtonEvent(center.X, center.Y, 0, false, game, 0)
+local function Click(btn)
+    if not btn then return false end
+    pcall(function()
+        btn:Click()
+        btn:Activate()
+        if btn.MouseButton1Click then
+            btn.MouseButton1Click:Fire()
         end
     end)
-    
-    if not success then
-        DebugLog("Erro ao clicar: " .. tostring(err), "ERROR")
-        return false
-    end
-    
     return true
 end
 
-function Utils:WaitForUI(uiName, timeout)
-    timeout = timeout or 5
-    DebugLog("Aguardando UI: " .. uiName .. " (timeout: " .. timeout .. "s)", "DEBUG")
-    
-    local start = tick()
-    while tick() - start < timeout do
-        local ui = self:FindUIByName(uiName)
-        if ui and ui.Enabled then
-            DebugLog("UI encontrada: " .. uiName, "SUCCESS")
-            return ui
-        end
-        task.wait(0.1)
+local function ClickAtPosition(pos)
+    if pos then
+        VirtualInputManager:SendMouseButtonEvent(pos.X, pos.Y, 0, true, game, 0)
+        task.wait(0.05)
+        VirtualInputManager:SendMouseButtonEvent(pos.X, pos.Y, 0, false, game, 0)
+        return true
     end
-    
-    DebugLog("Timeout - UI não encontrada: " .. uiName, "WARNING")
-    return nil
+    return false
 end
 
-function Utils:IsInGame()
-    return LocalPlayer and LocalPlayer:FindFirstChild("PlayerGui") ~= nil
+local function PressKey(key)
+    VirtualInputManager:SendKeyEvent(true, key, false, game)
+    task.wait(0.05)
+    VirtualInputManager:SendKeyEvent(false, key, false, game)
 end
 
--- ===================
--- SISTEMA DE NOTIFICAÇÃO
--- ===================
-function Utils:Notify(message, type)
-    type = type or "info"
-    DebugLog("NOTIFICAÇÃO: " .. message, type:upper())
-    
-    -- Criar notificação visual
+local function Notify(msg, color)
     local gui = Instance.new("ScreenGui")
-    gui.Name = "Notification"
+    gui.Name = "Notify"
     gui.Parent = game.CoreGui
     
     local frame = Instance.new("Frame")
-    frame.Size = UDim2.new(0, 300, 0, 50)
-    frame.Position = UDim2.new(0.5, -150, 0, 10)
-    frame.BackgroundColor3 = Color3.fromRGB(20, 20, 35)
-    frame.BorderSizePixel = 0
+    frame.Size = UDim2.new(0, 320, 0, 35)
+    frame.Position = UDim2.new(0.5, -160, 0.85, 0)
+    frame.BackgroundColor3 = Color3.fromRGB(15, 15, 35)
     frame.BackgroundTransparency = 0.1
     frame.Parent = gui
     
     local corner = Instance.new("UICorner")
-    corner.CornerRadius = UDim.new(0, 8)
+    corner.CornerRadius = UDim.new(0, 6)
     corner.Parent = frame
-    
-    local border = Instance.new("Frame")
-    border.Size = UDim2.new(1, 0, 0, 2)
-    border.Position = UDim2.new(0, 0, 0, 0)
-    border.BackgroundColor3 = type == "success" and Color3.fromRGB(0, 255, 100) or 
-                              type == "warning" and Color3.fromRGB(255, 200, 0) or
-                              type == "error" and Color3.fromRGB(255, 50, 50) or
-                              Color3.fromRGB(100, 70, 255)
-    border.Parent = frame
     
     local text = Instance.new("TextLabel")
     text.Size = UDim2.new(1, -20, 1, 0)
     text.Position = UDim2.new(0, 10, 0, 0)
     text.BackgroundTransparency = 1
-    text.Text = message
-    text.TextColor3 = Color3.fromRGB(255, 255, 255)
-    text.TextSize = 13
+    text.Text = msg
+    text.TextColor3 = color or Color3.fromRGB(255, 255, 255)
+    text.TextSize = 12
+    text.Font = Enum.Font.Gotham
     text.TextXAlignment = Enum.TextXAlignment.Left
     text.TextYAlignment = Enum.TextYAlignment.Center
-    text.Font = Enum.Font.Gotham
     text.Parent = frame
     
-    task.wait(3)
-    frame:Destroy()
+    task.wait(2.5)
+    gui:Destroy()
 end
 
--- ===================
--- SISTEMAS DE AUTOMAÇÃO
--- ===================
-local Systems = {}
+-- ====== SISTEMA DE BID ESPECÍFICO ======
 
--- 1. AUTO BID
-function Systems:AutoBid()
-    DebugLog("Iniciando Auto Bid...", "INFO")
+-- Função para detectar o minigame de bid
+local function DetectBidUI()
+    -- Procurar por UIs relacionadas a leilão
+    local uiNames = {"bid", "auction", "leilão", "storage", "container", "warehouse", "garage"}
+    for _, name in pairs(uiNames) do
+        local ui = FindUI(name)
+        if ui then
+            return ui
+        end
+    end
     
-    while Config.Toggles.AutoBid and RunService:IsRunning() do
-        task.wait(0.5)
-        
-        -- Listar todas as UIs atuais para debug
-        local allUI = Utils:FindAllUI()
-        DebugLog(string.format("UIs encontradas: %d", #allUI), "DEBUG")
-        
-        for _, ui in pairs(allUI) do
-            DebugLog("UI disponível: " .. ui.Name, "DEBUG")
-            
-            -- Procurar por UI de minigame
-            if ui.Name:lower():find("bid") or ui.Name:lower():find("minigame") or 
-               ui.Name:lower():find("garage") or ui.Name:lower():find("leilão") then
-                
-                DebugLog("UI de Bid encontrada: " .. ui.Name, "SUCCESS")
-                
-                -- Procurar botões de opção (1, 2, 3, 4, 5, etc)
-                local optionsFound = 0
-                for i = 1, 10 do
-                    local btn = Utils:FindButtonByText(ui, tostring(i))
-                    if btn then
-                        optionsFound = optionsFound + 1
-                        -- Pegar o maior número possível
-                        if i >= 5 then -- Preferir números maiores
-                            Utils:ClickButton(btn)
-                            Utils:Notify("Auto Bid: Selecionado " .. i, "success")
-                            break
-                        end
-                    end
-                end
-                
-                if optionsFound == 0 then
-                    -- Tentar encontrar botões comuns
-                    local commonBtns = {"Bid", "Auction", "Leilão", "Apostar"}
-                    for _, text in pairs(commonBtns) do
-                        local btn = Utils:FindButtonByText(ui, text)
-                        if btn then
-                            Utils:ClickButton(btn)
-                            Utils:Notify("Auto Bid: Clicado em " .. text, "success")
-                            break
-                        end
-                    end
-                end
+    -- Procurar por botões comuns em leilões
+    local uis = FindAllUIs()
+    for _, ui in pairs(uis) do
+        local buttons = FindAllButtons(ui)
+        for _, btn in pairs(buttons) do
+            local text = string.lower(btn.Text or "")
+            if string.find(text, "bid") or string.find(text, "$") or 
+               string.find(text, "apostar") or string.find(text, "leilão") then
+                return ui
             end
         end
     end
+    return nil
 end
 
--- 2. AUTO COLETAR
-function Systems:AutoColetar()
-    DebugLog("Iniciando Auto Coletar...", "INFO")
+-- Função para fazer o bid automaticamente
+local function DoAutoBid()
+    local ui = DetectBidUI()
+    if not ui then return false end
     
-    while Config.Toggles.AutoColetar and RunService:IsRunning() do
-        task.wait(1)
-        
-        -- Procurar itens no workspace
-        local itemsFound = 0
-        local function searchItems(parent)
-            for _, child in pairs(parent:GetChildren()) do
-                if child:IsA("BasePart") or child:IsA("Model") then
-                    if child.Name:lower():find("item") or 
-                       child.Name:lower():find("colet") or
-                       child.Name:lower():find("recurso") or
-                       child:FindFirstChild("ClickDetector") then
-                        
-                        itemsFound = itemsFound + 1
-                        DebugLog("Item encontrado: " .. child.Name, "DEBUG")
-                        
-                        -- Teleportar para o item
-                        local pos = child:IsA("Model") and child.PrimaryPart and child.PrimaryPart.Position or child.Position
-                        if pos then
-                            Utils:TeleportTo(pos)
-                            task.wait(0.3)
-                            
-                            -- Tentar coletar
-                            local clickDetector = child:FindFirstChild("ClickDetector")
-                            if clickDetector then
-                                clickDetector:FireClick(LocalPlayer)
-                                Utils:Notify("Coletando: " .. child.Name, "success")
-                            end
-                            
-                            -- Tentar coletar via UI
-                            local ui = Utils:FindUIByName("colet")
-                            if ui then
-                                local collectBtn = Utils:FindButtonByText(ui, "colet")
-                                if collectBtn then
-                                    Utils:ClickButton(collectBtn)
-                                end
-                            end
-                        end
-                    end
-                end
-                searchItems(child)
-            end
-        end
-        
-        searchItems(workspace)
-        
-        if itemsFound == 0 then
-            DebugLog("Nenhum item encontrado para coletar", "WARNING")
+    Notify("🎯 Leilão detectado!", Color3.fromRGB(255, 200, 0))
+    
+    -- Procurar botões de bid (geralmente são numerados ou com valores)
+    local buttons = FindAllButtons(ui)
+    local bidButtons = {}
+    
+    for _, btn in pairs(buttons) do
+        local text = btn.Text or ""
+        -- Verificar se é um botão de bid (contém $ ou número)
+        if string.find(text, "$") or string.find(text, "%d+") then
+            table.insert(bidButtons, btn)
         end
     end
+    
+    -- Ordenar por valor (maior primeiro)
+    table.sort(bidButtons, function(a, b)
+        local valA = tonumber(string.match(a.Text or "", "%d+")) or 0
+        local valB = tonumber(string.match(b.Text or "", "%d+")) or 0
+        return valA > valB
+    end)
+    
+    -- Clicar no maior bid disponível
+    if #bidButtons > 0 then
+        local bestBid = bidButtons[1]
+        local value = tonumber(string.match(bestBid.Text or "", "%d+")) or 0
+        
+        if value > LastBid then
+            Click(bestBid)
+            LastBid = value
+            Notify("💰 Bid de $" .. value, Color3.fromRGB(0, 255, 100))
+            return true
+        end
+    end
+    
+    -- Fallback: procurar botão "Bid" genérico
+    local bidBtn = FindButton(ui, "bid") or FindButton(ui, "apostar")
+    if bidBtn then
+        Click(bidBtn)
+        Notify("💰 Bid realizado!", Color3.fromRGB(0, 255, 100))
+        return true
+    end
+    
+    return false
 end
 
--- 3. AUTO DRIVE
-function Systems:AutoDrive()
-    DebugLog("Iniciando Auto Drive...", "INFO")
+-- ====== AUTO BID ======
+local function AutoBid()
+    Notify("🚗 Auto Bid iniciado", Color3.fromRGB(100, 200, 255))
     
-    while Config.Toggles.AutoDrive and RunService:IsRunning() do
-        task.wait(2)
+    while Config.Toggles.AutoBid do
+        task.wait(0.3)
         
-        -- Procurar veículo
-        local vehicle = nil
-        for _, obj in pairs(workspace:GetChildren()) do
-            if obj:IsA("Model") and (obj.Name:lower():find("veic") or obj.Name:lower():find("car") or obj.Name:lower():find("caminhão")) then
-                vehicle = obj
+        -- Verificar se está em um leilão
+        local inAuction = false
+        local uis = FindAllUIs()
+        for _, ui in pairs(uis) do
+            local text = FindText(ui, "leilão") or FindText(ui, "auction") or FindText(ui, "bid")
+            if text then
+                inAuction = true
                 break
             end
         end
         
-        if vehicle then
-            DebugLog("Veículo encontrado: " .. vehicle.Name, "SUCCESS")
-            
-            -- Entrar no veículo
-            local seat = vehicle:FindFirstChild("Seat") or vehicle:FindFirstChild("DriverSeat")
-            if seat then
-                Utils:TeleportTo(seat.Position, Vector3.new(0, 2, 0))
-                task.wait(0.5)
-                
-                -- Tentar sentar
-                if seat:IsA("Seat") then
-                    local char = Utils:GetCharacter()
-                    if char and char:FindFirstChild("Humanoid") then
-                        char.Humanoid:MoveTo(seat.Position)
-                        task.wait(0.5)
-                        seat:EnterSeat(char)
-                        Utils:Notify("Entrou no veículo", "success")
-                    end
-                end
-                
-                -- Teleportar veículo para a loja
-                local storePos = Config.Positions.Store
-                if vehicle.PrimaryPart then
-                    vehicle.PrimaryPart.CFrame = CFrame.new(storePos)
-                    Utils:Notify("Veículo teleportado para a loja", "success")
+        if inAuction then
+            DoAutoBid()
+        else
+            -- Se não estiver em leilão, procurar por containers para abrir
+            local storageUI = FindUI("storage")
+            if storageUI then
+                local openBtn = FindButton(storageUI, "abrir") or FindButton(storageUI, "open")
+                if openBtn then
+                    Click(openBtn)
+                    Notify("📦 Abrindo container...", Color3.fromRGB(255, 200, 0))
+                    task.wait(1)
                 end
             end
-        else
-            DebugLog("Nenhum veículo encontrado", "WARNING")
         end
     end
 end
 
--- 4. AUTO DESCARREGAR
-function Systems:AutoDescarregar()
-    DebugLog("Iniciando Auto Descarregar...", "INFO")
+-- ====== AUTO COLETAR ======
+local function AutoColetar()
+    Notify("📦 Auto Coletar iniciado", Color3.fromRGB(100, 200, 255))
     
-    while Config.Toggles.AutoDescarregar and RunService:IsRunning() do
-        task.wait(1)
-        
-        -- Teleportar para área de descarregamento
-        Utils:TeleportTo(Config.Positions.UnloadArea)
+    while Config.Toggles.AutoColetar do
         task.wait(0.5)
         
-        -- Procurar UI de descarregamento
-        local ui = Utils:FindUIByName("unload") or Utils:FindUIByName("descarregar")
+        -- Procurar itens no chão (Storage Hunters tem itens espalhados)
+        local foundItems = {}
+        
+        for _, obj in pairs(workspace:GetDescendants()) do
+            if obj:IsA("BasePart") or obj:IsA("Model") then
+                local name = string.lower(obj.Name)
+                local hasClick = obj:FindFirstChild("ClickDetector") or 
+                               (obj:IsA("Model") and obj:FindFirstChild("ClickDetector"))
+                
+                -- Verificar se é um item coletável
+                if hasClick or string.find(name, "item") or 
+                   string.find(name, "loot") or string.find(name, "drop") or
+                   string.find(name, "collect") or string.find(name, "crate") or
+                   string.find(name, "caixa") or string.find(name, "container") then
+                    
+                    local pos
+                    if obj:IsA("Model") and obj.PrimaryPart then
+                        pos = obj.PrimaryPart.Position
+                    elseif obj:IsA("BasePart") then
+                        pos = obj.Position
+                    end
+                    
+                    if pos and not CollectedItems[obj] then
+                        table.insert(foundItems, {obj = obj, pos = pos})
+                    end
+                end
+            end
+        end
+        
+        -- Coletar itens encontrados
+        for _, item in pairs(foundItems) do
+            Teleport(item.pos)
+            task.wait(0.3)
+            
+            -- Tentar coletar via ClickDetector
+            local cd = item.obj:FindFirstChild("ClickDetector")
+            if cd then
+                cd:FireClick(LocalPlayer)
+                CollectedItems[item.obj] = true
+                Notify("✅ Coletou: " .. item.obj.Name, Color3.fromRGB(0, 255, 100))
+                task.wait(0.2)
+            end
+            
+            -- Se não tiver ClickDetector, tentar via UI
+            local ui = FindUI("collect") or FindUI("coletar")
+            if ui then
+                local btn = FindButton(ui, "coletar") or FindButton(ui, "collect") or FindButton(ui, "pegar")
+                if btn then
+                    Click(btn)
+                    CollectedItems[item.obj] = true
+                    Notify("✅ Coletou via UI", Color3.fromRGB(0, 255, 100))
+                    task.wait(0.2)
+                end
+            end
+        end
+        
+        -- Procurar UI de coleta em massa
+        local ui = FindUI("loot") or FindUI("reward")
         if ui then
-            DebugLog("UI de descarregamento encontrada", "SUCCESS")
+            local claimBtn = FindButton(ui, "reivindicar") or FindButton(ui, "claim") or FindButton(ui, "coletar")
+            if claimBtn then
+                Click(claimBtn)
+                Notify("✅ Reivindicou recompensas", Color3.fromRGB(0, 255, 100))
+            end
+        end
+    end
+end
+
+-- ====== AUTO DRIVE ======
+local function AutoDrive()
+    Notify("🚀 Auto Drive iniciado", Color3.fromRGB(100, 200, 255))
+    
+    while Config.Toggles.AutoDrive do
+        task.wait(2)
+        
+        -- Procurar veículos (Storage Hunters tem caminhões/empilhadeiras)
+        local vehicle = nil
+        for _, obj in pairs(workspace:GetChildren()) do
+            if obj:IsA("Model") then
+                local name = string.lower(obj.Name)
+                if string.find(name, "truck") or string.find(name, "caminhão") or 
+                   string.find(name, "forklift") or string.find(name, "empilhadeira") or
+                   string.find(name, "vehicle") or string.find(name, "carro") or
+                   string.find(name, "van") or string.find(name, "carrinho") then
+                    vehicle = obj
+                    break
+                end
+            end
+        end
+        
+        if vehicle then
+            Notify("🚗 Veículo encontrado: " .. vehicle.Name, Color3.fromRGB(255, 200, 0))
             
-            local unloadBtn = Utils:FindButtonByText(ui, "descarregar") or 
-                             Utils:FindButtonByText(ui, "unload")
+            -- Procurar assento
+            local seat = vehicle:FindFirstChild("Seat") or 
+                        vehicle:FindFirstChild("DriverSeat") or
+                        vehicle:FindFirstChild("VehicleSeat") or
+                        vehicle:FindFirstChild("Driver")
             
-            if unloadBtn then
-                -- Tentar extrair quantidade
-                local qtd = 10 -- Máximo padrão
-                local qtdMatch = unloadBtn.Text:match("(%d+)")
-                if qtdMatch then
-                    qtd = tonumber(qtdMatch) or 10
+            if seat then
+                Teleport(seat.Position)
+                task.wait(0.5)
+                
+                -- Entrar no veículo
+                if seat:IsA("Seat") or seat:IsA("VehicleSeat") then
+                    local char = LocalPlayer.Character
+                    if char then
+                        seat:EnterSeat(char)
+                        Notify("✅ Entrou no veículo", Color3.fromRGB(0, 255, 100))
+                        task.wait(1)
+                    end
                 end
                 
-                Utils:ClickButton(unloadBtn)
-                Utils:Notify("Descarregando " .. qtd .. " itens", "success")
+                -- Procurar área de descarregamento
+                local unloadPos = nil
+                for _, obj in pairs(workspace:GetDescendants()) do
+                    if obj:IsA("BasePart") then
+                        local name = string.lower(obj.Name)
+                        if string.find(name, "unload") or string.find(name, "descarregar") or
+                           string.find(name, "delivery") or string.find(name, "entrega") or
+                           string.find(name, "drop") or string.find(name, "zone") then
+                            unloadPos = obj.Position
+                            break
+                        end
+                    end
+                end
+                
+                if unloadPos then
+                    if vehicle.PrimaryPart then
+                        vehicle.PrimaryPart.CFrame = CFrame.new(unloadPos)
+                        Notify("✅ Veículo teleportado para descarregar", Color3.fromRGB(0, 255, 100))
+                    end
+                end
+            end
+        end
+    end
+end
+
+-- ====== AUTO DESCARREGAR ======
+local function AutoDescarregar()
+    Notify("📥 Auto Descarregar iniciado", Color3.fromRGB(100, 200, 255))
+    
+    while Config.Toggles.AutoDescarregar do
+        task.wait(1)
+        
+        -- Procurar UI de descarregamento
+        local ui = FindUI("unload") or FindUI("descarregar") or FindUI("delivery") or FindUI("entrega")
+        
+        if ui then
+            Notify("📋 UI de descarregamento encontrada", Color3.fromRGB(255, 200, 0))
+            
+            -- Procurar botão de descarregar
+            local btn = FindButton(ui, "descarregar") or 
+                       FindButton(ui, "unload") or
+                       FindButton(ui, "entregar") or
+                       FindButton(ui, "deliver") or
+                       FindButton(ui, "confirmar")
+            
+            if btn then
+                Click(btn)
+                Notify("✅ Descarregando...", Color3.fromRGB(0, 255, 100))
                 task.wait(2)
-            else
-                -- Procurar botões numerados
-                for i = 1, 10 do
-                    local btn = Utils:FindButtonByText(ui, tostring(i))
-                    if btn then
-                        Utils:ClickButton(btn)
-                        Utils:Notify("Descarregando " .. i .. " itens", "success")
+            end
+            
+            -- Tentar botões numerados (quantidade de itens)
+            for i = 1, 10 do
+                local numBtn = FindButton(ui, tostring(i))
+                if numBtn then
+                    Click(numBtn)
+                    Notify("✅ Descarregou " .. i .. " itens", Color3.fromRGB(0, 255, 100))
+                    break
+                end
+            end
+        end
+        
+        -- Procurar área de descarregamento no mapa
+        if not ui then
+            for _, obj in pairs(workspace:GetDescendants()) do
+                if obj:IsA("BasePart") then
+                    local name = string.lower(obj.Name)
+                    if string.find(name, "unload") or string.find(name, "descarregar") then
+                        Teleport(obj.Position)
+                        Notify("📍 Teleportado para área de descarregar", Color3.fromRGB(255, 200, 0))
+                        task.wait(0.5)
                         break
                     end
                 end
             end
-        else
-            DebugLog("UI de descarregamento não encontrada", "WARNING")
         end
     end
 end
 
--- 5. AUTO PLOT
-function Systems:AutoPlot()
-    DebugLog("Iniciando Auto Plot...", "INFO")
+-- ====== AUTO PLOT ======
+local function AutoPlot()
+    Notify("📊 Auto Plot iniciado", Color3.fromRGB(100, 200, 255))
     
-    while Config.Toggles.AutoPlot and RunService:IsRunning() do
+    while Config.Toggles.AutoPlot do
         task.wait(1)
         
-        -- Teleportar para área das prateleiras
-        Utils:TeleportTo(Config.Positions.PlotArea)
-        task.wait(0.5)
-        
-        -- Procurar UI da loja/prateleira
-        local ui = Utils:FindUIByName("loja") or Utils:FindUIByName("shop") or 
-                   Utils:FindUIByName("store") or Utils:FindUIByName("prateleira")
+        -- Procurar UI da loja/estoque
+        local ui = FindUI("shop") or FindUI("store") or FindUI("loja") or 
+                   FindUI("storage") or FindUI("inventory") or FindUI("estoque")
         
         if ui then
-            DebugLog("UI da loja encontrada", "SUCCESS")
+            Notify("🏪 UI da loja/estoque encontrada", Color3.fromRGB(255, 200, 0))
             
-            -- Procurar botões de itens
-            local itemsFound = 0
-            local itemNames = {"Capybara", "Ferramenta", "Leite", "Ovos", "Aço", "Chave"}
+            -- Procurar itens para colocar
+            local itemsPlaced = 0
+            local allButtons = FindAllButtons(ui)
             
-            for _, name in pairs(itemNames) do
-                local item = Utils:FindButtonByText(ui, name)
-                if item then
-                    Utils:ClickButton(item)
-                    itemsFound = itemsFound + 1
-                    task.wait(0.3)
+            for _, btn in pairs(allButtons) do
+                local text = btn.Text or ""
+                -- Verificar se é um item (não é botão de ação)
+                if not string.find(string.lower(text), "voltar") and
+                   not string.find(string.lower(text), "close") and
+                   not string.find(string.lower(text), "fechar") and
+                   not string.find(string.lower(text), "sair") then
+                    
+                    if string.len(text) > 1 then
+                        Click(btn)
+                        itemsPlaced = itemsPlaced + 1
+                        task.wait(0.15)
+                    end
                 end
             end
             
-            -- Procurar botão "Adicionar" ou "Colocar"
-            local addBtn = Utils:FindButtonByText(ui, "adicionar") or 
-                          Utils:FindButtonByText(ui, "colocar") or
-                          Utils:FindButtonByText(ui, "plot")
+            -- Botão para confirmar colocação
+            local confirmBtn = FindButton(ui, "colocar") or 
+                              FindButton(ui, "place") or
+                              FindButton(ui, "plot") or
+                              FindButton(ui, "adicionar") or
+                              FindButton(ui, "add") or
+                              FindButton(ui, "confirmar")
             
-            if addBtn then
-                Utils:ClickButton(addBtn)
-                Utils:Notify("Itens colocados na prateleira", "success")
+            if confirmBtn then
+                Click(confirmBtn)
+                Notify("✅ " .. itemsPlaced .. " itens colocados", Color3.fromRGB(0, 255, 100))
             end
-            
-            if itemsFound == 0 then
-                DebugLog("Nenhum item encontrado para colocar", "WARNING")
-            end
-        else
-            DebugLog("UI da loja não encontrada", "WARNING")
         end
     end
 end
 
--- 6. AUTO LIMPEZA
-function Systems:AutoLimpeza()
-    DebugLog("Iniciando Auto Limpeza...", "INFO")
+-- ====== AUTO LIMPEZA ======
+local function AutoLimpeza()
+    Notify("🧹 Auto Limpeza iniciado", Color3.fromRGB(100, 200, 255))
     
-    while Config.Toggles.AutoLimpeza and RunService:IsRunning() do
+    while Config.Toggles.AutoLimpeza do
         task.wait(2)
         
-        -- Verificar itens sujos no inventário
-        local dirtyFound = false
+        -- Verificar se há itens sujos
+        local hasDirty = false
         local playerGui = LocalPlayer:FindFirstChild("PlayerGui")
         
         if playerGui then
             for _, gui in pairs(playerGui:GetChildren()) do
                 if gui:IsA("ScreenGui") then
-                    local dirtyItem = Utils:FindItemByText(gui, "dirty") or 
-                                     Utils:FindItemByText(gui, "sujo")
-                    if dirtyItem then
-                        dirtyFound = true
-                        DebugLog("Item sujo encontrado: " .. dirtyItem.Text, "SUCCESS")
+                    for _, child in pairs(gui:GetDescendants()) do
+                        if child:IsA("TextLabel") or child:IsA("TextButton") then
+                            local text = string.lower(child.Text or "")
+                            if string.find(text, "dirty") or string.find(text, "sujo") or
+                               string.find(text, "sujeira") or string.find(text, "sujar") then
+                                hasDirty = true
+                                Notify("🧹 Item sujo encontrado", Color3.fromRGB(255, 200, 0))
+                                break
+                            end
+                        end
+                    end
+                end
+                if hasDirty then break end
+            end
+        end
+        
+        if hasDirty then
+            -- Procurar área de limpeza
+            local cleanPos = nil
+            for _, obj in pairs(workspace:GetDescendants()) do
+                if obj:IsA("BasePart") then
+                    local name = string.lower(obj.Name)
+                    if string.find(name, "clean") or string.find(name, "limpeza") or
+                       string.find(name, "wash") or string.find(name, "lavar") then
+                        cleanPos = obj.Position
                         break
                     end
                 end
             end
-        end
-        
-        if dirtyFound then
-            -- Teleportar para lavanderia
-            Utils:TeleportTo(Config.Positions.Laundry)
-            task.wait(0.5)
             
-            -- Procurar interação (Pressione E)
-            local interaction = workspace:FindFirstChild("Interaction") or 
-                              workspace:FindFirstChild("Interact")
-            
-            if interaction then
-                DebugLog("Interação encontrada", "SUCCESS")
-                
-                -- Simular pressionar E
-                VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.E, false, game)
-                task.wait(0.1)
-                VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.E, false, game)
-                Utils:Notify("Interagindo com lavanderia", "success")
-                task.wait(1)
+            if cleanPos then
+                Teleport(cleanPos)
+                Notify("📍 Teleportado para limpeza", Color3.fromRGB(255, 200, 0))
+                task.wait(0.5)
             end
             
             -- Procurar UI de limpeza
-            local ui = Utils:WaitForUI("clean", 3) or Utils:WaitForUI("limpeza", 3)
+            local ui = FindUI("clean") or FindUI("limpeza") or FindUI("lavar")
+            
             if ui then
-                DebugLog("UI de limpeza encontrada", "SUCCESS")
+                Notify("🧹 UI de limpeza encontrada", Color3.fromRGB(255, 200, 0))
                 
-                -- Verificar diamantes
-                local diamonds = 0
-                local diamondText = Utils:FindItemByText(ui, "diamond") or 
-                                   Utils:FindItemByText(ui, "gem")
-                if diamondText then
-                    local match = diamondText.Text:match("(%d+)")
-                    if match then
-                        diamonds = tonumber(match) or 0
-                    end
-                end
+                -- Clicar em limpar item
+                local cleanBtn = FindButton(ui, "limpar") or 
+                                FindButton(ui, "clean") or
+                                FindButton(ui, "lavar") or
+                                FindButton(ui, "wash")
                 
-                -- Escolher slot baseado nos diamantes
-                local slot = diamonds >= 30 and "Slot 2" or "Slot 1"
-                local slotBtn = Utils:FindButtonByText(ui, slot)
-                if slotBtn then
-                    Utils:ClickButton(slotBtn)
-                    Utils:Notify("Usando " .. slot .. " para limpeza", "success")
-                    task.wait(0.5)
-                end
-                
-                -- Iniciar lavagem
-                local washBtn = Utils:FindButtonByText(ui, "lavar") or 
-                               Utils:FindButtonByText(ui, "wash") or
-                               Utils:FindButtonByText(ui, "iniciar")
-                if washBtn then
-                    Utils:ClickButton(washBtn)
-                    Utils:Notify("Lavagem iniciada", "success")
-                    task.wait(5) -- Tempo de lavagem
+                if cleanBtn then
+                    Click(cleanBtn)
+                    Notify("🧼 Limpando item...", Color3.fromRGB(0, 200, 255))
+                    task.wait(3)
                 end
             end
         end
     end
 end
 
--- ===================
--- UI PRINCIPAL
--- ===================
-local UIManager = {}
+-- ====== UI PRINCIPAL ======
 
-function UIManager:CreateUI()
-    DebugLog("Criando UI principal...", "INFO")
-    
+local function CreateUI()
     local screenGui = Instance.new("ScreenGui")
-    screenGui.Name = "AutoFarmPro"
+    screenGui.Name = "AutoFarmSH"
     screenGui.Parent = game.CoreGui
     screenGui.ResetOnSpawn = false
-    screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
     
-    local mainFrame = Instance.new("Frame")
-    mainFrame.Name = "MainFrame"
-    mainFrame.Size = UDim2.new(0, 280, 0, 420)
-    mainFrame.Position = UDim2.new(0.5, -140, 0.5, -210)
-    mainFrame.BackgroundColor3 = Color3.fromRGB(15, 15, 25)
-    mainFrame.BorderColor3 = Color3.fromRGB(65, 45, 120)
-    mainFrame.BorderSizePixel = 1
-    mainFrame.ClipsDescendants = true
-    mainFrame.Parent = screenGui
-    mainFrame.Visible = false
+    local main = Instance.new("Frame")
+    main.Size = UDim2.new(0, 260, 0, 380)
+    main.Position = UDim2.new(0.5, -130, 0.5, -190)
+    main.BackgroundColor3 = Color3.fromRGB(12, 12, 28)
+    main.BorderColor3 = Color3.fromRGB(100, 70, 255)
+    main.BorderSizePixel = 1
+    main.Parent = screenGui
+    main.Visible = false
     
-    local corner = Instance.new("UICorner")
-    corner.CornerRadius = UDim.new(0, 12)
-    corner.Parent = mainFrame
+    local mainCorner = Instance.new("UICorner")
+    mainCorner.CornerRadius = UDim.new(0, 10)
+    mainCorner.Parent = main
     
-    -- Title Bar
-    local titleBar = Instance.new("Frame")
-    titleBar.Size = UDim2.new(1, 0, 0, 45)
-    titleBar.BackgroundColor3 = Color3.fromRGB(20, 20, 35)
-    titleBar.Parent = mainFrame
+    -- Título
+    local title = Instance.new("Frame")
+    title.Size = UDim2.new(1, 0, 0, 38)
+    title.BackgroundColor3 = Color3.fromRGB(20, 20, 45)
+    title.Parent = main
     
     local titleCorner = Instance.new("UICorner")
-    titleCorner.CornerRadius = UDim.new(0, 12)
-    titleCorner.Parent = titleBar
+    titleCorner.CornerRadius = UDim.new(0, 10)
+    titleCorner.Parent = title
     
     local titleText = Instance.new("TextLabel")
     titleText.Size = UDim2.new(1, -40, 1, 0)
-    titleText.Position = UDim2.new(0, 20, 0, 0)
+    titleText.Position = UDim2.new(0, 15, 0, 0)
     titleText.BackgroundTransparency = 1
-    titleText.Text = "⚡ AutoFarm Pro"
-    titleText.TextColor3 = Color3.fromRGB(100, 70, 255)
-    titleText.TextSize = 18
+    titleText.Text = "📦 Storage AutoFarm"
+    titleText.TextColor3 = Color3.fromRGB(120, 80, 255)
+    titleText.TextSize = 16
     titleText.TextXAlignment = Enum.TextXAlignment.Left
     titleText.TextYAlignment = Enum.TextYAlignment.Center
     titleText.Font = Enum.Font.GothamBold
-    titleText.Parent = titleBar
+    titleText.Parent = title
     
-    local closeBtn = Instance.new("TextButton")
-    closeBtn.Size = UDim2.new(0, 30, 0, 30)
-    closeBtn.Position = UDim2.new(1, -35, 0, 7)
-    closeBtn.BackgroundColor3 = Color3.fromRGB(255, 50, 50)
-    closeBtn.BackgroundTransparency = 0.8
-    closeBtn.Text = "✕"
-    closeBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-    closeBtn.TextSize = 18
-    closeBtn.Font = Enum.Font.GothamBold
-    closeBtn.Parent = titleBar
+    -- Botão fechar
+    local close = Instance.new("TextButton")
+    close.Size = UDim2.new(0, 26, 0, 26)
+    close.Position = UDim2.new(1, -33, 0, 6)
+    close.BackgroundColor3 = Color3.fromRGB(200, 40, 40)
+    close.BackgroundTransparency = 0.7
+    close.Text = "✕"
+    close.TextColor3 = Color3.fromRGB(255, 255, 255)
+    close.TextSize = 15
+    close.Font = Enum.Font.GothamBold
+    close.Parent = title
     
     local closeCorner = Instance.new("UICorner")
-    closeCorner.CornerRadius = UDim.new(0, 6)
-    closeCorner.Parent = closeBtn
+    closeCorner.CornerRadius = UDim.new(0, 5)
+    closeCorner.Parent = close
     
-    closeBtn.MouseButton1Click:Connect(function()
-        self:ToggleUI()
+    local isOpen = false
+    close.MouseButton1Click:Connect(function()
+        isOpen = not isOpen
+        main.Visible = isOpen
     end)
     
-    -- Scroll Frame
-    local scrollFrame = Instance.new("ScrollingFrame")
-    scrollFrame.Size = UDim2.new(1, -20, 1, -60)
-    scrollFrame.Position = UDim2.new(0, 10, 0, 55)
-    scrollFrame.BackgroundTransparency = 1
-    scrollFrame.ScrollBarThickness = 4
-    scrollFrame.ScrollBarImageColor3 = Color3.fromRGB(100, 70, 255)
-    scrollFrame.CanvasSize = UDim2.new(0, 0, 0, 400)
-    scrollFrame.Parent = mainFrame
+    -- Scroll
+    local scroll = Instance.new("ScrollingFrame")
+    scroll.Size = UDim2.new(1, -16, 1, -50)
+    scroll.Position = UDim2.new(0, 8, 0, 44)
+    scroll.BackgroundTransparency = 1
+    scroll.ScrollBarThickness = 3
+    scroll.ScrollBarImageColor3 = Color3.fromRGB(100, 70, 255)
+    scroll.CanvasSize = UDim2.new(0, 0, 0, 350)
+    scroll.Parent = main
     
-    local listLayout = Instance.new("UIListLayout")
-    listLayout.Padding = UDim.new(0, 8)
-    listLayout.SortOrder = Enum.SortOrder.LayoutOrder
-    listLayout.Parent = scrollFrame
+    local list = Instance.new("UIListLayout")
+    list.Padding = UDim.new(0, 5)
+    list.SortOrder = Enum.SortOrder.LayoutOrder
+    list.Parent = scroll
     
-    -- Toggles
+    -- Toggles específicos do Storage Hunters
     local toggleData = {
-        {Key = "AutoBid", Label = "🚗 Auto Bid", Order = 1},
-        {Key = "AutoColetar", Label = "📦 Auto Coletar", Order = 2},
-        {Key = "AutoDrive", Label = "🚀 Auto Drive", Order = 3},
-        {Key = "AutoDescarregar", Label = "📥 Auto Descarregar", Order = 4},
-        {Key = "AutoPlot", Label = "📊 Auto Plot", Order = 5},
-        {Key = "AutoLimpeza", Label = "🧹 Auto Limpeza", Order = 6}
+        {"AutoBid", "💰 Auto Bid"},
+        {"AutoColetar", "📦 Auto Coletar"},
+        {"AutoDrive", "🚚 Auto Drive"},
+        {"AutoDescarregar", "📥 Auto Descarregar"},
+        {"AutoPlot", "📊 Auto Plot"},
+        {"AutoLimpeza", "🧹 Auto Limpeza"}
+    }
+    
+    local systems = {
+        AutoBid = AutoBid,
+        AutoColetar = AutoColetar,
+        AutoDrive = AutoDrive,
+        AutoDescarregar = AutoDescarregar,
+        AutoPlot = AutoPlot,
+        AutoLimpeza = AutoLimpeza
     }
     
     for _, data in pairs(toggleData) do
-        self:CreateToggle(scrollFrame, data.Key, data.Label, data.Order)
-    end
-    
-    -- Debug Button (adicional)
-    local debugBtn = Instance.new("TextButton")
-    debugBtn.Size = UDim2.new(1, -20, 0, 30)
-    debugBtn.Position = UDim2.new(0, 10, 1, -40)
-    debugBtn.BackgroundColor3 = Color3.fromRGB(30, 30, 50)
-    debugBtn.Text = "🔍 Debug Info"
-    debugBtn.TextColor3 = Color3.fromRGB(180, 180, 200)
-    debugBtn.TextSize = 12
-    debugBtn.Font = Enum.Font.Gotham
-    debugBtn.Parent = mainFrame
-    
-    local debugCorner = Instance.new("UICorner")
-    debugCorner.CornerRadius = UDim.new(0, 6)
-    debugCorner.Parent = debugBtn
-    
-    debugBtn.MouseButton1Click:Connect(function()
-        local allUI = Utils:FindAllUI()
-        local msg = string.format("UIs ativas: %d\n", #allUI)
-        for _, ui in pairs(allUI) do
-            msg = msg .. " - " .. ui.Name .. "\n"
-        end
-        Utils:Notify(msg, "info")
-    end)
-    
-    -- Update Canvas
-    listLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
-        scrollFrame.CanvasSize = UDim2.new(0, 0, 0, listLayout.AbsoluteContentSize.Y + 50)
-    end)
-    
-    -- Draggable
-    self:MakeDraggable(mainFrame, titleBar)
-    
-    self.MainFrame = mainFrame
-    self.IsOpen = false
-    
-    DebugLog("UI criada com sucesso!", "SUCCESS")
-end
-
-function UIManager:CreateToggle(parent, key, label, order)
-    local frame = Instance.new("Frame")
-    frame.Size = UDim2.new(1, 0, 0, 50)
-    frame.BackgroundColor3 = Color3.fromRGB(25, 25, 45)
-    frame.BackgroundTransparency = 0.5
-    frame.ClipsDescendants = true
-    frame.LayoutOrder = order
-    frame.Parent = parent
-    
-    local corner = Instance.new("UICorner")
-    corner.CornerRadius = UDim.new(0, 8)
-    corner.Parent = frame
-    
-    local labelText = Instance.new("TextLabel")
-    labelText.Size = UDim2.new(0.7, -10, 1, 0)
-    labelText.Position = UDim2.new(0, 15, 0, 0)
-    labelText.BackgroundTransparency = 1
-    labelText.Text = label
-    labelText.TextColor3 = Color3.fromRGB(255, 255, 255)
-    labelText.TextSize = 14
-    labelText.TextXAlignment = Enum.TextXAlignment.Left
-    labelText.TextYAlignment = Enum.TextYAlignment.Center
-    labelText.Font = Enum.Font.GothamMedium
-    labelText.Parent = frame
-    
-    local toggleBtn = Instance.new("TextButton")
-    toggleBtn.Size = UDim2.new(0, 50, 0, 28)
-    toggleBtn.Position = UDim2.new(1, -60, 0.5, -14)
-    toggleBtn.BackgroundColor3 = Color3.fromRGB(60, 60, 80)
-    toggleBtn.Text = ""
-    toggleBtn.Parent = frame
-    
-    local toggleCorner = Instance.new("UICorner")
-    toggleCorner.CornerRadius = UDim.new(0, 14)
-    toggleCorner.Parent = toggleBtn
-    
-    local indicator = Instance.new("Frame")
-    indicator.Size = UDim2.new(0, 22, 0, 22)
-    indicator.Position = UDim2.new(0, 3, 0.5, -11)
-    indicator.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-    indicator.BackgroundTransparency = 0.5
-    indicator.Parent = toggleBtn
-    
-    local indicatorCorner = Instance.new("UICorner")
-    indicatorCorner.CornerRadius = UDim.new(0, 11)
-    indicatorCorner.Parent = indicator
-    
-    local isOn = false
-    
-    local function updateToggle(state)
-        isOn = state
-        Config.Toggles[key] = state
+        local key, label = data[1], data[2]
         
-        if state then
-            toggleBtn.BackgroundColor3 = Color3.fromRGB(100, 70, 255)
-            indicator.BackgroundTransparency = 0
-            indicator.Position = UDim2.new(1, -25, 0.5, -11)
-            Utils:Notify(label .. " ✅ ATIVADO", "success")
+        local frame = Instance.new("Frame")
+        frame.Size = UDim2.new(1, 0, 0, 42)
+        frame.BackgroundColor3 = Color3.fromRGB(22, 22, 45)
+        frame.BackgroundTransparency = 0.3
+        frame.Parent = scroll
+        
+        local frameCorner = Instance.new("UICorner")
+        frameCorner.CornerRadius = UDim.new(0, 6)
+        frameCorner.Parent = frame
+        
+        frame.MouseEnter:Connect(function()
+            TweenService:Create(frame, TweenInfo.new(0.2), {
+                BackgroundTransparency = 0.1
+            }):Play()
+        end)
+        frame.MouseLeave:Connect(function()
+            TweenService:Create(frame, TweenInfo.new(0.2), {
+                BackgroundTransparency = 0.3
+            }):Play()
+        end)
+        
+        local text = Instance.new("TextLabel")
+        text.Size = UDim2.new(0.7, -10, 1, 0)
+        text.Position = UDim2.new(0, 12, 0, 0)
+        text.BackgroundTransparency = 1
+        text.Text = label
+        text.TextColor3 = Color3.fromRGB(240, 240, 255)
+        text.TextSize = 13
+        text.TextXAlignment = Enum.TextXAlignment.Left
+        text.TextYAlignment = Enum.TextYAlignment.Center
+        text.Font = Enum.Font.Gotham
+        text.Parent = frame
+        
+        -- Switch
+        local btn = Instance.new("TextButton")
+        btn.Size = UDim2.new(0, 44, 0, 22)
+        btn.Position = UDim2.new(1, -50, 0.5, -11)
+        btn.BackgroundColor3 = Color3.fromRGB(50, 50, 70)
+        btn.Text = ""
+        btn.Parent = frame
+        
+        local btnCorner = Instance.new("UICorner")
+        btnCorner.CornerRadius = UDim.new(0, 11)
+        btnCorner.Parent = btn
+        
+        local indicator = Instance.new("Frame")
+        indicator.Size = UDim2.new(0, 16, 0, 16)
+        indicator.Position = UDim2.new(0, 3, 0.5, -8)
+        indicator.BackgroundColor3 = Color3.fromRGB(200, 200, 200)
+        indicator.BackgroundTransparency = 0.4
+        indicator.Parent = btn
+        
+        local indCorner = Instance.new("UICorner")
+        indCorner.CornerRadius = UDim.new(0, 8)
+        indCorner.Parent = indicator
+        
+        local active = false
+        
+        btn.MouseButton1Click:Connect(function()
+            active = not active
+            Config.Toggles[key] = active
             
-            -- Iniciar sistema
-            local systems = {
-                AutoBid = Systems.AutoBid,
-                AutoColetar = Systems.AutoColetar,
-                AutoDrive = Systems.AutoDrive,
-                AutoDescarregar = Systems.AutoDescarregar,
-                AutoPlot = Systems.AutoPlot,
-                AutoLimpeza = Systems.AutoLimpeza
-            }
-            
-            if systems[key] then
-                coroutine.wrap(systems[key])()
+            if active then
+                btn.BackgroundColor3 = Color3.fromRGB(100, 70, 255)
+                indicator.BackgroundTransparency = 0
+                indicator.Position = UDim2.new(1, -19, 0.5, -8)
+                Notify("✅ " .. label .. " ATIVADO", Color3.fromRGB(0, 255, 100))
+                
+                if systems[key] then
+                    coroutine.wrap(systems[key])()
+                end
+            else
+                btn.BackgroundColor3 = Color3.fromRGB(50, 50, 70)
+                indicator.BackgroundTransparency = 0.4
+                indicator.Position = UDim2.new(0, 3, 0.5, -8)
+                Notify("❌ " .. label .. " DESATIVADO", Color3.fromRGB(255, 100, 100))
             end
-        else
-            toggleBtn.BackgroundColor3 = Color3.fromRGB(60, 60, 80)
-            indicator.BackgroundTransparency = 0.5
-            indicator.Position = UDim2.new(0, 3, 0.5, -11)
-            Utils:Notify(label .. " ❌ DESATIVADO", "warning")
-        end
+        end)
+        
+        frame.LayoutOrder = #toggleData
     end
     
-    toggleBtn.MouseButton1Click:Connect(function()
-        updateToggle(not isOn)
+    -- Atualizar canvas
+    list:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
+        scroll.CanvasSize = UDim2.new(0, 0, 0, list.AbsoluteContentSize.Y + 10)
     end)
     
-    return frame
+    -- Info extra
+    local info = Instance.new("TextLabel")
+    info.Size = UDim2.new(1, -20, 0, 20)
+    info.Position = UDim2.new(0, 10, 1, -25)
+    info.BackgroundTransparency = 1
+    info.Text = "🔄 Storage Hunters | INSERT"
+    info.TextColor3 = Color3.fromRGB(150, 150, 200)
+    info.TextSize = 10
+    info.Font = Enum.Font.Gotham
+    info.TextXAlignment = Enum.TextXAlignment.Center
+    info.Parent = main
+    
+    -- Tecla Insert
+    UserInputService.InputBegan:Connect(function(input)
+        if input.KeyCode == Enum.KeyCode.Insert then
+            isOpen = not isOpen
+            main.Visible = isOpen
+            if isOpen then
+                Notify("📱 Storage AutoFarm Carregado!", Color3.fromRGB(100, 200, 255))
+            end
+        end
+    end)
+    
+    Notify("🚀 Storage AutoFarm Carregado! Pressione INSERT", Color3.fromRGB(0, 255, 100))
+    return screenGui
 end
 
-function UIManager:MakeDraggable(frame, dragHandle)
-    local dragging = false
-    local dragInput, dragStart, startPos
-    
-    dragHandle.InputBegan:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.MouseButton1 then
-            dragging = true
-            dragStart = input.Position
-            startPos = frame.Position
-            
-            input.Changed:Connect(function()
-                if input.UserInputState == Enum.UserInputState.End then
-                    dragging = false
-                end
-            end)
-        end
-    end)
-    
-    dragHandle.InputChanged:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.MouseMovement then
-            dragInput = input
-        end
-    end)
-    
-    UserInputService.InputChanged:Connect(function(input)
-        if input == dragInput and dragging then
-            local delta = input.Position - dragStart
-            local screenSize = game:GetService("GuiService"):GetGuiInset()
-            
-            local newX = math.clamp(startPos.X.Offset + delta.X, -screenSize.X, screenSize.X)
-            local newY = math.clamp(startPos.Y.Offset + delta.Y, -screenSize.Y, screenSize.Y)
-            
-            frame.P
+-- ====== INICIAR ======
+CreateUI()
